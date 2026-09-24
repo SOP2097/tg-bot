@@ -37,7 +37,7 @@ except sqlite3.OperationalError:
 
 conn.commit()
 
-# === СЛОВАРЬ ТРИГГЕРОВ ===
+# === СЛОВАРИ ДЛЯ АЛГОРИТМА И ПЕРЕВОДА ===
 TRIGGERS = {
     "gender": {
         "male": ["парен", "мальчик", "чел", "тип", "пацан", "молод", "мужч", "он"],
@@ -73,6 +73,16 @@ TRIGGERS = {
         "c3": ["3 курс", "третьекурс", "третий"],
         "c4": ["4 курс", "четверокурс", "четвертый", "выпускн"]
     }
+}
+
+# Словарь для красивого вывода в статистику админа
+TRANSLATE = {
+    "male": "Парень", "female": "Девушка",
+    "blonde": "Блонд", "dark": "Темные", "light_brown": "Русые", "red": "Рыжие", "colored": "Цветные",
+    "tall": "Высокий", "avg": "Средний", "short": "Невысокий",
+    "glasses": "Очки", "tattoo": "Тату", "piercing": "Пирсинг", "curly": "Кудряшки", "kare": "Каре", "none": "Нет особых примет",
+    "ranepa": "РАНХиГС", "mirea": "МИРЭА", "mpgu": "МПГУ", "mgimo": "МГИМО",
+    "c1": "1 курс", "c2": "2 курс", "c3": "3 курс", "c4": "4 курс"
 }
 
 class RadarForm(StatesGroup):
@@ -132,7 +142,7 @@ async def notify_radar(text: str, post_id: int):
                     pass
             
             if notified_count > 0:
-                matched_str = ", ".join([f"{k}: {v}" for k, v in matched.items()])
+                matched_str = ", ".join([f"{TRANSLATE.get(v, v)}" for k, v in matched.items()])
                 admin_report = (
                     "📊 <b>Отчет Радара</b>\n\n"
                     f"Пост ID {post_id} активировал радар!\n"
@@ -159,39 +169,25 @@ async def cmd_admin_panel(message: types.Message):
     builder.button(text="📢 Рассылка", callback_data="admin_broadcast")
     builder.button(text="🔒 Закрыть чат", callback_data="admin_close")
     builder.button(text="🔓 Открыть чат", callback_data="admin_open")
-    builder.adjust(2, 1, 2) # Красиво расставляем кнопки
+    builder.adjust(2, 1, 2)
     await message.answer("🛠 <b>Панель управления каналом:</b>", parse_mode="HTML", reply_markup=builder.as_markup())
 
 @dp.callback_query(F.data == "admin_stats", F.from_user.id == ADMIN_ID)
 async def cb_admin_stats(callback: types.CallbackQuery):
-    cursor.execute("SELECT gender, university FROM radar")
+    # Берем последние 30 зарегистрированных анкет, чтобы не превысить лимит сообщения в ТГ
+    cursor.execute("SELECT gender, hair, height, feature, university, course FROM radar ORDER BY user_id DESC LIMIT 30")
     users = cursor.fetchall()
     
-    total = len(users)
-    if total == 0:
+    if not users:
         await callback.answer("В базе пока нет анкет.", show_alert=True)
         return
         
-    males = sum(1 for u in users if u[0] == "male")
-    females = sum(1 for u in users if u[0] == "female")
-    
-    unis = {"ranepa": 0, "mirea": 0, "mpgu": 0, "mgimo": 0}
-    for u in users:
-        uni = u[1]
-        if uni in unis:
-            unis[uni] += 1
-            
-    text = (
-        f"📈 <b>Статистика Радара:</b>\n\n"
-        f"👥 Всего анкет: <b>{total}</b> чел.\n"
-        f"👦 Парней: {males}\n"
-        f"👧 Девушек: {females}\n\n"
-        f"🎓 <b>По ВУЗам:</b>\n"
-        f"РАНХиГС: {unis['ranepa']}\n"
-        f"МИРЭА: {unis['mirea']}\n"
-        f"МПГУ: {unis['mpgu']}\n"
-        f"МГИМО: {unis['mgimo']}"
-    )
+    text = "📊 <b>Последние анкеты для вдохновения:</b>\n\n"
+    for i, u in enumerate(users, 1):
+        # Превращаем технические ключи в красивые русские слова
+        profile = [TRANSLATE.get(item, str(item)) for item in u if item]
+        text += f"👤 <b>Пользователь {i}:</b> {', '.join(profile)}\n\n"
+        
     await callback.message.answer(text, parse_mode="HTML")
     await callback.answer()
 
