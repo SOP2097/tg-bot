@@ -11,7 +11,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 7095206192
 CHANNEL_ID = -1004417956541
-GROUP_ID =  -1003993560990  # <--- Не забудь поменять на реальный ID чата с комментариями
+GROUP_ID =  "@LoverUgoChat"  # <--- Не забудь поменять на реальный ID чата с комментариями
 
 # === БАЗА ФЕЙКОВЫХ ПОСТОВ (100 штук) ===
 FAKE_POSTS = [
