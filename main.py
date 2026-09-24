@@ -1,16 +1,3 @@
-Тут есть один важный технический нюанс: поскольку старый файл `radar.db` уже был удален физически с хостинга, Telegram-бот безвозвратно потерял ID тех самых первых людей. Отправить им сообщение технически невозможно, так как бот больше не знает, кому именно писать.
-
-Однако я добавил кнопку рассылки и **умное сохранение базы данных** (через команду `ALTER TABLE`), чтобы в будущем база никогда не удалялась при обновлениях кода, и ты всегда мог делать массовые рассылки по всем зарегистрированным пользователям.
-
-Вот полный, готовый код для замены в `main.py`. В него включены:
-
-1. Неубиваемая база данных (не требует удаления при изменениях).
-2. Кнопка **«📢 Рассылка (Обновление)»** в `/admin` с отчетом тебе в ЛС.
-3. Расширенный радар (ВУЗы и курсы).
-4. Отчет о срабатывании радара в ЛС админа.
-5. Все 100 фейковых постов.
-
-```python
 import asyncio
 import logging
 import os
@@ -25,7 +12,8 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # === НАСТРОЙКИ ===
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# Если бот жалуется на токен, замени os.getenv("BOT_TOKEN") на свой реальный токен в кавычках
+BOT_TOKEN = os.getenv("BOT_TOKEN") 
 ADMIN_ID = 7095206192
 CHANNEL_ID = -1004417956541
 GROUP_ID = -1003993560990  
@@ -35,11 +23,9 @@ CHANNEL_LINK = "LoveUgoZapad"
 conn = sqlite3.connect('radar.db', check_same_thread=False)
 cursor = conn.cursor()
 
-# Создаем базовую таблицу
 cursor.execute('''CREATE TABLE IF NOT EXISTS radar 
                   (user_id INTEGER PRIMARY KEY, gender TEXT, hair TEXT, height TEXT, feature TEXT)''')
 
-# Безопасное добавление новых колонок (без потери данных при обновлении кода)
 try:
     cursor.execute("ALTER TABLE radar ADD COLUMN university TEXT")
 except sqlite3.OperationalError:
@@ -170,7 +156,7 @@ def get_admin_kb(user_id: int) -> InlineKeyboardMarkup:
 async def cmd_admin_panel(message: types.Message):
     builder = InlineKeyboardBuilder()
     builder.button(text="🎲 Фейкпуб", callback_data="admin_fake")
-    builder.button(text="📢 Рассылка (Обновление)", callback_data="admin_broadcast")
+    builder.button(text="📢 Рассылка", callback_data="admin_broadcast")
     builder.button(text="🔒 Закрыть чат", callback_data="admin_close")
     builder.button(text="🔓 Открыть чат", callback_data="admin_open")
     builder.adjust(1)
@@ -179,7 +165,6 @@ async def cmd_admin_panel(message: types.Message):
 @dp.callback_query(F.data == "admin_broadcast", F.from_user.id == ADMIN_ID)
 async def cb_admin_broadcast(callback: types.CallbackQuery):
     await callback.answer("Рассылка запущена...", show_alert=False)
-    
     cursor.execute("SELECT user_id FROM radar")
     users = cursor.fetchall()
     
@@ -198,7 +183,7 @@ async def cb_admin_broadcast(callback: types.CallbackQuery):
         except Exception:
             pass
             
-    await bot.send_message(ADMIN_ID, f"📢 <b>Рассылка завершена!</b>\n\nСообщение успешно доставлено: <b>{success_count}</b> пользователям.", parse_mode="HTML")
+    await bot.send_message(ADMIN_ID, f"📢 <b>Рассылка завершена!</b>\nУспешно доставлено: <b>{success_count}</b> пользователям.", parse_mode="HTML")
 
 @dp.callback_query(F.data == "admin_close", F.from_user.id == ADMIN_ID)
 async def cb_admin_close(callback: types.CallbackQuery):
@@ -223,7 +208,7 @@ async def start_radar(message: types.Message, state: FSMContext):
     builder.button(text="👦 Парень", callback_data="rad_gender_male")
     builder.button(text="👧 Девушка", callback_data="rad_gender_female")
     builder.adjust(2)
-    await message.answer("🎯 <b>Настройка радара</b>\n\nЯ буду присылать тебе уведомления, если в канале будут искать кого-то с твоими приметами.\n\nШаг 1. Укажи свой пол:", parse_mode="HTML", reply_markup=builder.as_markup())
+    await message.answer("🎯 <b>Настройка радара</b>\n\nШаг 1. Укажи свой пол:", parse_mode="HTML", reply_markup=builder.as_markup())
     await state.set_state(RadarForm.gender)
 
 @dp.callback_query(RadarForm.gender, F.data.startswith("rad_gender_"))
@@ -305,17 +290,17 @@ async def process_course(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     
     cursor.execute("REPLACE INTO radar (user_id, gender, hair, height, feature, university, course) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                   (user_id, data['gender'], data['hair'], data['height'], data['feature'], data['university'], course))
+                   (user_id, data['gender'], data['hair'], data.get('height', ''), data.get('feature', ''), data.get('university', ''), course))
     conn.commit()
     
-    await callback.message.edit_text("✅ <b>Твой профиль сохранен!</b>\n\nТеперь, если в канале опубликуют пост с поиском человека твоей внешности или из твоего ВУЗа, бот моментально пришлет тебе ссылку в личные сообщения.", parse_mode="HTML")
+    await callback.message.edit_text("✅ <b>Твой профиль сохранен!</b>", parse_mode="HTML")
     await state.clear()
 
 @dp.message(F.text == "💌 Валентинка")
 async def info_valentine(message: types.Message):
     await message.answer(
         "💌 <b>Как отправить валентинку?</b>\n\n"
-        "Напиши в чат команду <code>/love</code> и текст своего признания.\n\n"
+        "Напиши команду <code>/love</code> и текст.\n"
         "<i>Пример:</i>\n<code>/love Девочка в белом пуховике у 2 корпуса, ты супер!</code>",
         parse_mode="HTML"
     )
@@ -406,7 +391,6 @@ async def cb_reject(callback: types.CallbackQuery):
 async def cb_done(callback: types.CallbackQuery):
     await callback.answer()
 
-# === БАЗА ФЕЙКОВЫХ ПОСТОВ (100 штук) ===
 FAKE_POSTS = [
     "ищу парня который сегодня в столовой на 3 этаже уронил вилку и смешно выругался. ты был в сером свитшоте найдись",
     "девочка с каре и красными прядями стояла возле автоматов с кофе на первом этаже около 14:00. ты очень красивая дай инст",
@@ -533,5 +517,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-```
