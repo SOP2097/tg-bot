@@ -151,15 +151,49 @@ def get_admin_kb(user_id: int) -> InlineKeyboardMarkup:
     builder.adjust(2)
     return builder.as_markup()
 
-@dp.message(Command("admin"), F.from_user.id == ADMIN_ID)
+@dp.message(Command("admin"), F.from_user.id == ADMIN_ID, F.chat.type == "private")
 async def cmd_admin_panel(message: types.Message):
     builder = InlineKeyboardBuilder()
     builder.button(text="🎲 Фейкпуб", callback_data="admin_fake")
+    builder.button(text="📊 Статистика", callback_data="admin_stats")
     builder.button(text="📢 Рассылка", callback_data="admin_broadcast")
     builder.button(text="🔒 Закрыть чат", callback_data="admin_close")
     builder.button(text="🔓 Открыть чат", callback_data="admin_open")
-    builder.adjust(1)
+    builder.adjust(2, 1, 2) # Красиво расставляем кнопки
     await message.answer("🛠 <b>Панель управления каналом:</b>", parse_mode="HTML", reply_markup=builder.as_markup())
+
+@dp.callback_query(F.data == "admin_stats", F.from_user.id == ADMIN_ID)
+async def cb_admin_stats(callback: types.CallbackQuery):
+    cursor.execute("SELECT gender, university FROM radar")
+    users = cursor.fetchall()
+    
+    total = len(users)
+    if total == 0:
+        await callback.answer("В базе пока нет анкет.", show_alert=True)
+        return
+        
+    males = sum(1 for u in users if u[0] == "male")
+    females = sum(1 for u in users if u[0] == "female")
+    
+    unis = {"ranepa": 0, "mirea": 0, "mpgu": 0, "mgimo": 0}
+    for u in users:
+        uni = u[1]
+        if uni in unis:
+            unis[uni] += 1
+            
+    text = (
+        f"📈 <b>Статистика Радара:</b>\n\n"
+        f"👥 Всего анкет: <b>{total}</b> чел.\n"
+        f"👦 Парней: {males}\n"
+        f"👧 Девушек: {females}\n\n"
+        f"🎓 <b>По ВУЗам:</b>\n"
+        f"РАНХиГС: {unis['ranepa']}\n"
+        f"МИРЭА: {unis['mirea']}\n"
+        f"МПГУ: {unis['mpgu']}\n"
+        f"МГИМО: {unis['mgimo']}"
+    )
+    await callback.message.answer(text, parse_mode="HTML")
+    await callback.answer()
 
 @dp.callback_query(F.data == "admin_broadcast", F.from_user.id == ADMIN_ID)
 async def cb_admin_broadcast(callback: types.CallbackQuery):
@@ -200,8 +234,8 @@ async def cb_admin_open(callback: types.CallbackQuery):
     except Exception as e:
         await callback.answer(f"Системная ошибка: {e}", show_alert=True)
 
-@dp.message(F.text == "🎯 Настроить радар")
-@dp.message(Command("radar"))
+@dp.message(F.text == "🎯 Настроить радар", F.chat.type == "private")
+@dp.message(Command("radar"), F.chat.type == "private")
 async def start_radar(message: types.Message, state: FSMContext):
     builder = InlineKeyboardBuilder()
     builder.button(text="👦 Парень", callback_data="rad_gender_male")
@@ -295,7 +329,7 @@ async def process_course(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text("✅ <b>Твой профиль сохранен!</b>\n\nТеперь, если в канале опубликуют пост с поиском человека твоей внешности или из твоего ВУЗа, бот моментально пришлет тебе ссылку в личные сообщения.", parse_mode="HTML")
     await state.clear()
 
-@dp.message(F.text == "💌 Валентинка")
+@dp.message(F.text == "💌 Валентинка", F.chat.type == "private")
 async def info_valentine(message: types.Message):
     await message.answer(
         "💌 <b>Как отправить валентинку?</b>\n\n"
@@ -304,7 +338,7 @@ async def info_valentine(message: types.Message):
         parse_mode="HTML"
     )
 
-@dp.message(Command("start"))
+@dp.message(Command("start"), F.chat.type == "private")
 async def cmd_start(message: types.Message):
     await message.answer(
         "🎙 <b>Привет! Это предложка канала Признания Юго-Западная.</b>\n\n"
@@ -314,7 +348,7 @@ async def cmd_start(message: types.Message):
         reply_markup=get_main_menu()
     )
 
-@dp.message(Command("love"))
+@dp.message(Command("love"), F.chat.type == "private")
 async def send_valentine(message: types.Message):
     user_text = message.text or message.caption or ""
     clean_text = user_text.replace("/love", "").strip()
@@ -331,7 +365,7 @@ async def send_valentine(message: types.Message):
     except Exception:
         pass
 
-@dp.message(F.voice)
+@dp.message(F.voice, F.chat.type == "private")
 async def handle_voice(message: types.Message):
     if message.voice.duration > 90:
         await message.answer("⚠️ Запиши историю короче (до 1.5 минут).")
@@ -340,13 +374,13 @@ async def handle_voice(message: types.Message):
     await bot.send_voice(chat_id=ADMIN_ID, voice=message.voice.file_id, caption=voice_caption, parse_mode="HTML", reply_markup=get_admin_kb(message.chat.id))
     await message.answer("🎙 Твое голосовое отправлено на модерацию!")
 
-@dp.message(F.video_note)
+@dp.message(F.video_note, F.chat.type == "private")
 async def handle_video_note(message: types.Message):
     await bot.send_video_note(chat_id=ADMIN_ID, video_note=message.video_note.file_id, reply_markup=get_admin_kb(message.chat.id))
     await bot.send_message(chat_id=ADMIN_ID, text="<a href='https://t.me/LoveUgoZapad'>Признания Юго-Западная</a>", parse_mode="HTML")
     await message.answer("📹 Твой кружок отправлен на модерацию!")
 
-@dp.message(F.content_type.in_({'text', 'photo'}))
+@dp.message(F.content_type.in_({'text', 'photo'}), F.chat.type == "private")
 async def handle_suggestion(message: types.Message):
     if message.text and message.text.startswith('/'):
         return
