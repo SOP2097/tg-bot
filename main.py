@@ -12,7 +12,6 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # === НАСТРОЙКИ ===
-# Если бот жалуется на токен, замени os.getenv("BOT_TOKEN") на свой реальный токен в кавычках
 BOT_TOKEN = os.getenv("BOT_TOKEN") 
 ADMIN_ID = 7095206192
 CHANNEL_ID = -1004417956541
@@ -290,17 +289,17 @@ async def process_course(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     
     cursor.execute("REPLACE INTO radar (user_id, gender, hair, height, feature, university, course) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                   (user_id, data['gender'], data['hair'], data.get('height', ''), data.get('feature', ''), data.get('university', ''), course))
+                   (user_id, data['gender'], data['hair'], data['height'], data['feature'], data['university'], course))
     conn.commit()
     
-    await callback.message.edit_text("✅ <b>Твой профиль сохранен!</b>", parse_mode="HTML")
+    await callback.message.edit_text("✅ <b>Твой профиль сохранен!</b>\n\nТеперь, если в канале опубликуют пост с поиском человека твоей внешности или из твоего ВУЗа, бот моментально пришлет тебе ссылку в личные сообщения.", parse_mode="HTML")
     await state.clear()
 
 @dp.message(F.text == "💌 Валентинка")
 async def info_valentine(message: types.Message):
     await message.answer(
         "💌 <b>Как отправить валентинку?</b>\n\n"
-        "Напиши команду <code>/love</code> и текст.\n"
+        "Напиши в чат команду <code>/love</code> и текст своего признания.\n\n"
         "<i>Пример:</i>\n<code>/love Девочка в белом пуховике у 2 корпуса, ты супер!</code>",
         parse_mode="HTML"
     )
