@@ -216,7 +216,7 @@ async def admin_ga_desc(message: types.Message, state: FSMContext):
 async def admin_ga_end(message: types.Message, state: FSMContext):
     try:
         dt = datetime.strptime(message.text.strip(), "%d.%m.%Y %H:%M")
-        db_time = dt.strftime("%Y-%m-%d %H:%M") # SQLite формат
+        db_time = dt.strftime("%Y-%m-%d %H:%M") 
         
         data = await state.get_data()
         bot_info = await bot.get_me()
@@ -251,7 +251,6 @@ async def giveaway_scheduler():
         ended = cursor.fetchall()
         
         for gid, title, msg_id in ended:
-            # Ищем победителя
             cursor.execute("SELECT inviter_id, COUNT(user_id) FROM radar WHERE inviter_id IS NOT NULL GROUP BY inviter_id")
             rows = cursor.fetchall()
             
@@ -277,17 +276,15 @@ async def giveaway_scheduler():
                 except Exception:
                     result_text = f"🏆 <b>Итоги розыгрыша «{title}»</b>\n\n🎉 <b>Победитель:</b> ID <code>{winner_id}</code> (Шансов: {chances})"
             
-            # Публикуем результат в канал реплаем к основному посту
             try:
                 await bot.send_message(chat_id=CHANNEL_ID, text=result_text, reply_to_message_id=msg_id, parse_mode="HTML")
             except Exception as e:
                 logging.error(f"Не удалось опубликовать итоги: {e}")
             
-            # Деактивируем завершенный розыгрыш
             cursor.execute("UPDATE giveaways SET is_active = 0 WHERE id = ?", (gid,))
             conn.commit()
             
-        await asyncio.sleep(60) # Проверяем базу каждую минуту
+        await asyncio.sleep(60)
 
 # === АДМИН ПАНЕЛЬ И БАЗОВЫЕ КОМАНДЫ ===
 @dp.message(Command("admin"), F.from_user.id == ADMIN_ID, F.chat.type == "private")
@@ -453,7 +450,7 @@ async def info_valentine(message: types.Message):
 async def send_valentine(message: types.Message):
     clean = (message.text or message.caption or "").replace("/love", "").strip()
     if not clean and not message.photo: return
-    v_text = f"💌 <b>АНОНИМНАЯ ВАЛЕНТИНКА</b> 💌\n\n<i>{clean}</i>\n\n<a href='https://t.me/LoveUgoZapad'>Признания</a>"
+    v_text = f"💌 <b>АНОНИМНАЯ ВАЛЕНТИНКА</b> 💌\n\n<i>{clean}</i>\n\n<a href='https://t.me/{CHANNEL_LINK}'>Радар Юго-Западная</a>"
     try:
         if message.photo: await bot.send_photo(chat_id=ADMIN_ID, photo=message.photo[-1].file_id, caption=v_text, parse_mode="HTML", reply_markup=get_admin_kb(message.chat.id))
         else: await bot.send_message(chat_id=ADMIN_ID, text=v_text, parse_mode="HTML", reply_markup=get_admin_kb(message.chat.id))
@@ -462,7 +459,7 @@ async def send_valentine(message: types.Message):
 
 @dp.message(F.voice, F.chat.type == "private")
 async def handle_voice(message: types.Message):
-    await bot.send_voice(chat_id=ADMIN_ID, voice=message.voice.file_id, caption="🎙 <b>ГОЛОСОВОЕ</b>", parse_mode="HTML", reply_markup=get_admin_kb(message.chat.id))
+    await bot.send_voice(chat_id=ADMIN_ID, voice=message.voice.file_id, caption=f"🎙 <b>АНОНИМНОЕ ГОЛОСОВОЕ</b> 🎙\n\n<a href='https://t.me/{CHANNEL_LINK}'>Радар Юго-Западная</a>", parse_mode="HTML", reply_markup=get_admin_kb(message.chat.id))
     await message.answer("Отправлено на модерацию!")
 
 @dp.message(F.video_note, F.chat.type == "private")
@@ -473,7 +470,7 @@ async def handle_video_note(message: types.Message):
 @dp.message(F.content_type.in_({'text', 'photo'}), F.chat.type == "private")
 async def handle_suggestion(message: types.Message):
     if message.text and message.text.startswith('/'): return
-    sig = "\n\n<a href='https://t.me/LoveUgoZapad'>Признания</a>"
+    sig = f"\n\n<a href='https://t.me/{CHANNEL_LINK}'>Радар Юго-Западная</a>"
     utext = message.html_text or ""
     try:
         if message.photo: await bot.send_photo(chat_id=ADMIN_ID, photo=message.photo[-1].file_id, caption=utext + sig, parse_mode="HTML", reply_markup=get_admin_kb(message.chat.id))
@@ -508,7 +505,7 @@ async def cb_admin_fake(callback: types.CallbackQuery):
     fake_text = random.choice(FAKE_POSTS)
     FAKE_POSTS.remove(fake_text)
     try:
-        msg = await bot.send_message(chat_id=CHANNEL_ID, text=fake_text + "\n\n<a href='https://t.me/LoveUgoZapad'>Признания</a>", parse_mode="HTML")
+        msg = await bot.send_message(chat_id=CHANNEL_ID, text=fake_text + f"\n\n<a href='https://t.me/{CHANNEL_LINK}'>Радар Юго-Западная</a>", parse_mode="HTML")
         await callback.answer("✅ Опубликовано!", show_alert=True)
         asyncio.create_task(notify_radar(fake_text, msg.message_id))
     except: pass
@@ -517,7 +514,6 @@ async def main():
     dp.message.middleware(CheckSubscriptionMiddleware())
     dp.callback_query.middleware(CheckSubscriptionMiddleware())
     
-    # Запускаем фоновую задачу рулетки вместе с ботом
     asyncio.create_task(giveaway_scheduler())
     
     await bot.delete_webhook(drop_pending_updates=True)
