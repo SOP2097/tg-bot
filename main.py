@@ -2,10 +2,11 @@ import asyncio
 import logging
 import os
 import random
+import shutil
 import sqlite3
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, ChatPermissions, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import InlineKeyboardMarkup, ChatPermissions, ReplyKeyboardMarkup, KeyboardButton, FSInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
@@ -18,8 +19,26 @@ CHANNEL_ID = -1004417956541
 GROUP_ID = -1003993560990  
 CHANNEL_LINK = "LoveUgoZapad"
 
-# === ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ===
-conn = sqlite3.connect('radar.db', check_same_thread=False)
+# === ИНИЦИАЛИЗАЦИЯ И СПАСЕНИЕ БАЗЫ ДАННЫХ ===
+DATA_DIR = "/app/data"
+DB_PATH = f"{DATA_DIR}/radar.db"
+
+# Создаем защищенную папку, если мы на Bothost
+if not os.path.exists(DATA_DIR):
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+    except Exception:
+        DB_PATH = "radar.db" # Запасной путь, если запускаешь на домашнем ПК
+
+# АВТОМАТИЧЕСКИЙ ПЕРЕНОС БАЗЫ (чтобы старые люди не сбросились при первом обновлении кода)
+if os.path.exists("radar.db") and DB_PATH != "radar.db" and not os.path.exists(DB_PATH):
+    try:
+        shutil.copy2("radar.db", DB_PATH)
+        logging.info("База успешно скопирована в защищенную папку!")
+    except Exception as e:
+        logging.error(f"Ошибка копирования базы: {e}")
+
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 
 cursor.execute('''CREATE TABLE IF NOT EXISTS radar 
@@ -75,7 +94,6 @@ TRIGGERS = {
     }
 }
 
-# Словарь для красивого вывода в статистику админа
 TRANSLATE = {
     "male": "Парень", "female": "Девушка",
     "blonde": "Блонд", "dark": "Темные", "light_brown": "Русые", "red": "Рыжие", "colored": "Цветные",
@@ -170,11 +188,23 @@ async def cmd_admin_panel(message: types.Message):
     builder.button(text="🔒 Закрыть чат", callback_data="admin_close")
     builder.button(text="🔓 Открыть чат", callback_data="admin_open")
     builder.adjust(2, 1, 2)
-    await message.answer("🛠 <b>Панель управления каналом:</b>", parse_mode="HTML", reply_markup=builder.as_markup())
+    await message.answer(
+        "🛠 <b>Панель управления каналом:</b>\n\n"
+        "<i>Скрытая команда:</i> <code>/get_db</code> - скачать базу файлом", 
+        parse_mode="HTML", 
+        reply_markup=builder.as_markup()
+    )
+
+@dp.message(Command("get_db"), F.from_user.id == ADMIN_ID, F.chat.type == "private")
+async def cmd_get_db(message: types.Message):
+    try:
+        db_file = FSInputFile(DB_PATH)
+        await message.answer_document(db_file, caption="📁 Твоя защищенная база данных радара")
+    except Exception as e:
+        await message.answer(f"Ошибка выгрузки: {e}")
 
 @dp.callback_query(F.data == "admin_stats", F.from_user.id == ADMIN_ID)
 async def cb_admin_stats(callback: types.CallbackQuery):
-    # Берем последние 30 зарегистрированных анкет, чтобы не превысить лимит сообщения в ТГ
     cursor.execute("SELECT gender, hair, height, feature, university, course FROM radar ORDER BY user_id DESC LIMIT 30")
     users = cursor.fetchall()
     
@@ -184,7 +214,6 @@ async def cb_admin_stats(callback: types.CallbackQuery):
         
     text = "📊 <b>Последние анкеты для вдохновения:</b>\n\n"
     for i, u in enumerate(users, 1):
-        # Превращаем технические ключи в красивые русские слова
         profile = [TRANSLATE.get(item, str(item)) for item in u if item]
         text += f"👤 <b>Пользователь {i}:</b> {', '.join(profile)}\n\n"
         
