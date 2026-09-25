@@ -4,9 +4,9 @@ import os
 import random
 import shutil
 import sqlite3
-from aiogram import Bot, Dispatcher, F, types
+from aiogram import Bot, Dispatcher, F, types, BaseMiddleware
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, ChatPermissions, ReplyKeyboardMarkup, KeyboardButton, FSInputFile
+from aiogram.types import InlineKeyboardMarkup, ChatPermissions, ReplyKeyboardMarkup, KeyboardButton, FSInputFile, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
@@ -23,14 +23,12 @@ CHANNEL_LINK = "LoveUgoZapad"
 DATA_DIR = "/app/data"
 DB_PATH = f"{DATA_DIR}/radar.db"
 
-# Создаем защищенную папку, если мы на Bothost
 if not os.path.exists(DATA_DIR):
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
     except Exception:
-        DB_PATH = "radar.db" # Запасной путь, если запускаешь на домашнем ПК
+        DB_PATH = "radar.db" 
 
-# АВТОМАТИЧЕСКИЙ ПЕРЕНОС БАЗЫ (чтобы старые люди не сбросились при первом обновлении кода)
 if os.path.exists("radar.db") and DB_PATH != "radar.db" and not os.path.exists(DB_PATH):
     try:
         shutil.copy2("radar.db", DB_PATH)
@@ -43,20 +41,17 @@ cursor = conn.cursor()
 
 cursor.execute('''CREATE TABLE IF NOT EXISTS radar 
                   (user_id INTEGER PRIMARY KEY, gender TEXT, hair TEXT, height TEXT, feature TEXT)''')
-
 try:
     cursor.execute("ALTER TABLE radar ADD COLUMN university TEXT")
 except sqlite3.OperationalError:
     pass
-
 try:
     cursor.execute("ALTER TABLE radar ADD COLUMN course TEXT")
 except sqlite3.OperationalError:
     pass
-
 conn.commit()
 
-# === СЛОВАРИ ДЛЯ АЛГОРИТМА И ПЕРЕВОДА ===
+# === СЛОВАРИ ===
 TRIGGERS = {
     "gender": {
         "male": ["парен", "мальчик", "чел", "тип", "пацан", "молод", "мужч", "он"],
@@ -115,6 +110,52 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
+# === СИСТЕМА ОБЯЗАТЕЛЬНОЙ ПОДПИСКИ (MIDDLEWARE) ===
+class CheckSubscriptionMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        user_id = event.from_user.id
+        
+        # 1. Админа пускаем всегда без проверок
+        if user_id == ADMIN_ID:
+            return await handler(event, data)
+            
+        # 2. Проверяем только в личке (чтобы бот не спамил в группе с комментариями)
+        chat_type = None
+        if isinstance(event, types.Message):
+            chat_type = event.chat.type
+        elif isinstance(event, types.CallbackQuery):
+            if event.message:
+                chat_type = event.message.chat.type
+        
+        if chat_type != "private":
+            return await handler(event, data)
+
+        # 3. Кнопку "Я подписался" пропускаем, чтобы она могла отработать
+        if isinstance(event, types.CallbackQuery) and event.data == "check_sub":
+            return await handler(event, data)
+        
+        # 4. Сама проверка подписки
+        try:
+            member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+            if member.status in ['left', 'kicked']:
+                raise Exception("Not subscribed")
+        except Exception:
+            # Если не подписан — выдаем заглушку
+            markup = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📢 Подписаться на канал", url=f"https://t.me/{CHANNEL_LINK}")],
+                [InlineKeyboardButton(text="✅ Я подписался", callback_data="check_sub")]
+            ])
+            text = "❗️ <b>Обязательное условие</b>\n\nЧтобы пользоваться ботом, настраивать радар и отправлять признания, тебе нужно быть подписанным на наш основной канал!"
+            
+            if isinstance(event, types.Message):
+                await event.answer(text, parse_mode="HTML", reply_markup=markup)
+            elif isinstance(event, types.CallbackQuery):
+                await event.message.answer(text, parse_mode="HTML", reply_markup=markup)
+                await event.answer()
+            return # Блокируем дальнейшее выполнение команды
+        
+        return await handler(event, data)
+
 def get_main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -128,7 +169,6 @@ async def notify_radar(text: str, post_id: int):
         return
     text_lower = text.lower()
     matched = {}
-    
     for category, values in TRIGGERS.items():
         for attr, roots in values.items():
             if any(root in text_lower for root in roots):
@@ -139,12 +179,10 @@ async def notify_radar(text: str, post_id: int):
         query = "SELECT user_id FROM radar WHERE "
         conditions = [f"{cat}='{val}'" for cat, val in matched.items()]
         query += " AND ".join(conditions)
-        
         try:
             cursor.execute(query)
             users = cursor.fetchall()
             post_url = f"https://t.me/{CHANNEL_LINK}/{post_id}"
-            
             notified_count = 0
             for (uid,) in users:
                 try:
@@ -158,7 +196,6 @@ async def notify_radar(text: str, post_id: int):
                     await asyncio.sleep(0.1)
                 except Exception:
                     pass
-            
             if notified_count > 0:
                 matched_str = ", ".join([f"{TRANSLATE.get(v, v)}" for k, v in matched.items()])
                 admin_report = (
@@ -168,7 +205,6 @@ async def notify_radar(text: str, post_id: int):
                     f"👥 Уведомления отправлены: <b>{notified_count} чел.</b>"
                 )
                 await bot.send_message(ADMIN_ID, admin_report, parse_mode="HTML")
-                
         except Exception as e:
             logging.error(f"DB Error: {e}")
 
@@ -178,6 +214,19 @@ def get_admin_kb(user_id: int) -> InlineKeyboardMarkup:
     builder.button(text="❌ Отклонить", callback_data=f"rej_{user_id}")
     builder.adjust(2)
     return builder.as_markup()
+
+# === ОБРАБОТЧИК КНОПКИ "Я ПОДПИСАЛСЯ" ===
+@dp.callback_query(F.data == "check_sub")
+async def cb_check_sub(callback: types.CallbackQuery):
+    try:
+        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=callback.from_user.id)
+        if member.status not in ['left', 'kicked']:
+            await callback.message.delete()
+            await callback.message.answer("✅ <b>Подписка подтверждена!</b>\n\nТеперь тебе доступны все функции. Жми /start для вызова меню.", parse_mode="HTML")
+        else:
+            await callback.answer("❌ Ты еще не подписался! Нажми кнопку 'Подписаться', а затем возвращайся сюда.", show_alert=True)
+    except Exception:
+        await callback.answer("❌ Ошибка проверки. Убедись, что канал существует.", show_alert=True)
 
 @dp.message(Command("admin"), F.from_user.id == ADMIN_ID, F.chat.type == "private")
 async def cmd_admin_panel(message: types.Message):
@@ -190,7 +239,9 @@ async def cmd_admin_panel(message: types.Message):
     builder.adjust(2, 1, 2)
     await message.answer(
         "🛠 <b>Панель управления каналом:</b>\n\n"
-        "<i>Скрытая команда:</i> <code>/get_db</code> - скачать базу файлом", 
+        "<i>Скрытые команды:</i>\n"
+        "<code>/get_db</code> - скачать базу файлом\n"
+        "<code>/whois ID</code> - пробить профиль (например: /whois 123456)", 
         parse_mode="HTML", 
         reply_markup=builder.as_markup()
     )
@@ -203,20 +254,35 @@ async def cmd_get_db(message: types.Message):
     except Exception as e:
         await message.answer(f"Ошибка выгрузки: {e}")
 
+@dp.message(Command("whois"), F.from_user.id == ADMIN_ID, F.chat.type == "private")
+async def cmd_whois(message: types.Message):
+    try:
+        target_id = int(message.text.split()[1])
+        user_info = await bot.get_chat(target_id)
+        username = f"@{user_info.username}" if user_info.username else "Отсутствует"
+        name = user_info.first_name or "Без имени"
+        await message.answer(
+            f"👤 <b>Имя:</b> <a href='tg://user?id={target_id}'>{name}</a>\n"
+            f"🔗 <b>Юзернейм:</b> {username}\n"
+            f"🆔 <b>ID:</b> <code>{target_id}</code>", 
+            parse_mode="HTML"
+        )
+    except IndexError:
+        await message.answer("❌ Напиши команду и ID через пробел. Пример: <code>/whois 123456789</code>", parse_mode="HTML")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка (возможно, бот не видел этого пользователя): {e}")
+
 @dp.callback_query(F.data == "admin_stats", F.from_user.id == ADMIN_ID)
 async def cb_admin_stats(callback: types.CallbackQuery):
     cursor.execute("SELECT gender, hair, height, feature, university, course FROM radar ORDER BY user_id DESC LIMIT 30")
     users = cursor.fetchall()
-    
     if not users:
         await callback.answer("В базе пока нет анкет.", show_alert=True)
         return
-        
     text = "📊 <b>Последние анкеты для вдохновения:</b>\n\n"
     for i, u in enumerate(users, 1):
         profile = [TRANSLATE.get(item, str(item)) for item in u if item]
         text += f"👤 <b>Пользователь {i}:</b> {', '.join(profile)}\n\n"
-        
     await callback.message.answer(text, parse_mode="HTML")
     await callback.answer()
 
@@ -225,14 +291,12 @@ async def cb_admin_broadcast(callback: types.CallbackQuery):
     await callback.answer("Рассылка запущена...", show_alert=False)
     cursor.execute("SELECT user_id FROM radar")
     users = cursor.fetchall()
-    
     success_count = 0
     for (uid,) in users:
         try:
             msg = (
                 "🤖 <b>Бот обновился!</b>\n\n"
-                "Мы добавили новые функции (выбор ВУЗа и курса).\n"
-                "Пожалуйста, заполни анкету радара заново, чтобы не пропустить, когда тебя будут искать!\n\n"
+                "Мы добавили новые функции. Пожалуйста, заполни анкету радара заново, чтобы не пропустить, когда тебя будут искать!\n\n"
                 "Жми 👉 /radar"
             )
             await bot.send_message(uid, msg, parse_mode="HTML")
@@ -240,7 +304,6 @@ async def cb_admin_broadcast(callback: types.CallbackQuery):
             await asyncio.sleep(0.1)
         except Exception:
             pass
-            
     await bot.send_message(ADMIN_ID, f"📢 <b>Рассылка завершена!</b>\nУспешно доставлено: <b>{success_count}</b> пользователям.", parse_mode="HTML")
 
 @dp.callback_query(F.data == "admin_close", F.from_user.id == ADMIN_ID)
@@ -273,7 +336,6 @@ async def start_radar(message: types.Message, state: FSMContext):
 async def process_gender(callback: types.CallbackQuery, state: FSMContext):
     gender = callback.data.split("_")[2]
     await state.update_data(gender=gender)
-    
     builder = InlineKeyboardBuilder()
     builder.button(text="Блонд", callback_data="rad_hair_blonde")
     builder.button(text="Темные", callback_data="rad_hair_dark")
@@ -288,7 +350,6 @@ async def process_gender(callback: types.CallbackQuery, state: FSMContext):
 async def process_hair(callback: types.CallbackQuery, state: FSMContext):
     hair = callback.data.split("_")[2]
     await state.update_data(hair=hair)
-    
     builder = InlineKeyboardBuilder()
     builder.button(text="Высокий", callback_data="rad_height_tall")
     builder.button(text="Средний", callback_data="rad_height_avg")
@@ -301,7 +362,6 @@ async def process_hair(callback: types.CallbackQuery, state: FSMContext):
 async def process_height(callback: types.CallbackQuery, state: FSMContext):
     height = callback.data.split("_")[2]
     await state.update_data(height=height)
-    
     builder = InlineKeyboardBuilder()
     builder.button(text="👓 Очки", callback_data="rad_feat_glasses")
     builder.button(text="🐉 Тату", callback_data="rad_feat_tattoo")
@@ -317,7 +377,6 @@ async def process_height(callback: types.CallbackQuery, state: FSMContext):
 async def process_feature(callback: types.CallbackQuery, state: FSMContext):
     feature = callback.data.split("_")[2]
     await state.update_data(feature=feature)
-    
     builder = InlineKeyboardBuilder()
     builder.button(text="РАНХиГС", callback_data="rad_uni_ranepa")
     builder.button(text="МИРЭА", callback_data="rad_uni_mirea")
@@ -331,7 +390,6 @@ async def process_feature(callback: types.CallbackQuery, state: FSMContext):
 async def process_uni(callback: types.CallbackQuery, state: FSMContext):
     university = callback.data.split("_")[2]
     await state.update_data(university=university)
-    
     builder = InlineKeyboardBuilder()
     builder.button(text="1 курс", callback_data="rad_course_c1")
     builder.button(text="2 курс", callback_data="rad_course_c2")
@@ -346,11 +404,9 @@ async def process_course(callback: types.CallbackQuery, state: FSMContext):
     course = callback.data.split("_")[2]
     data = await state.get_data()
     user_id = callback.from_user.id
-    
     cursor.execute("REPLACE INTO radar (user_id, gender, hair, height, feature, university, course) VALUES (?, ?, ?, ?, ?, ?, ?)",
                    (user_id, data['gender'], data['hair'], data['height'], data['feature'], data['university'], course))
     conn.commit()
-    
     await callback.message.edit_text("✅ <b>Твой профиль сохранен!</b>\n\nТеперь, если в канале опубликуют пост с поиском человека твоей внешности или из твоего ВУЗа, бот моментально пришлет тебе ссылку в личные сообщения.", parse_mode="HTML")
     await state.clear()
 
@@ -409,7 +465,6 @@ async def handle_video_note(message: types.Message):
 async def handle_suggestion(message: types.Message):
     if message.text and message.text.startswith('/'):
         return
-        
     signature = "\n\n<a href='https://t.me/LoveUgoZapad'>Признания Юго-Западная</a>"
     user_text = message.html_text or ""
     try:
@@ -426,15 +481,12 @@ async def cb_publish(callback: types.CallbackQuery):
     _, user_id = callback.data.split("_")
     try:
         published_msg = await bot.copy_message(chat_id=CHANNEL_ID, from_chat_id=ADMIN_ID, message_id=callback.message.message_id, reply_markup=None)
-        
         kb = InlineKeyboardBuilder()
         kb.button(text="Опубликовано ✅", callback_data="done")
         await callback.message.edit_reply_markup(reply_markup=kb.as_markup())
         await bot.send_message(chat_id=int(user_id), text="Твой пост опубликован в канале!")
-        
         post_text = callback.message.text or callback.message.caption or ""
         asyncio.create_task(notify_radar(post_text, published_msg.message_id))
-        
     except Exception as e:
         await callback.answer(f"Ошибка: {e}", show_alert=True)
 
@@ -457,99 +509,7 @@ FAKE_POSTS = [
     "парень с проколотой губой и кольцами на пальцах, курил у 6 корпуса где-то в час дня. найдись",
     "парень сидел сегодня в зоне отдыха в наушниках маршал и черной кожанке. отпиши в коменты",
     "21.09. девчонка в широких джинсах и огромном зеленом худи, мы столкнулись в дверях 2 корпуса. сорри еще раз",
-    "парень из 3 группы фнн, который сегодня отвечал у доски, у тебя очень красивый голос",
-    "ищу девочку блондинку с голубыми глазами, были сегодня на одном потоке в 315 ауд. на тебе был еще розовый шарф",
-    "ребята с юрфака которые вчера громко обсуждали доту в коридоре 4 этажа, можно с вами как-нибудь сыграть?",
-    "парень в бежевом пальто и круглых очках, спускался по лестнице в главном здании часов в 11. выглядишь очень атмосферно",
-    "девушка с татуировкой змеи на ключице, стояла в очереди в гардероб, мы переглянулись. найдись",
-    "кто потерял черный картхолдер тинькофф возле библиотеки? отдал охраннику",
-    "ищу типа который на паре по макре сегодня уснул на задней парте. понимаю тебя",
-    "девочка с веснушками в желтом свитере, ты покупала булочку на перемене. у тебя красивая улыбка",
-    "парень который вчера около 16:30 стоял на остановке возле уника под зонтом. был в черных конверсах. найдись",
-    "понравился мальчик, высокий, светлые волосы, был в синей ветровке. играл в теннис на физре сегодня",
-    "девчонки с 1 курса дизайна, вы очень стильно одеваетесь",
-    "парень со скейтом, проехал мимо меня у главного входа примерно в 10 утра.",
-    "девушка в черном платье и грубых ботинках на шнуровке, сидела на подоконнике на 2 этаже. отзовись если свободна",
-    "парень с рюкзаком ванс, ты сегодня споткнулся на лестнице и сделал вид что так и задумано. забавно вышло",
-    "ищу девочку в наушниках эпл макс, видела тебя в очереди за кофе. ты была в бежевом тренче",
-    "парень из ибда который всегда ходит в костюмах тройках. выглядит очень круто",
-    "девочка в розовом шарфе, шли сегодня вместе от метро к универу. ты очень милая",
-    "кто тот парень брюнет из 12 группы который постоянно шутит на семинарах?",
-    "парень в футболке с принтом евангелиона, стоял у расписания на 1 этаже. давай общаться",
-    "девушка со стаканчиком кофе, стояла сегодня возле вкусно и точка на южке примерно в 15:00. была в черной куртке, найдись",
-    "парень который сегодня на физре забил трехочковый в самом конце. хорош",
-    "ищу парня, глаза карие, волосы немного вьются, был в серой зипке. стоял курил возле курилки с высоким другом",
-    "девчонка в белых брюках карго и черном топе, были на совместной лекции по истории. ты постоянно крутила ручку",
-    "мальчик с гитарой который сидел на пуфиках в коворкинге, очень красиво играл",
-    "девушка с красной помадой и в черном берете, видела тебя в столовой. очень эстетично выглядишь",
-    "парни с 4 курса фмб, спасибо что помогли найти нужную аудиторию сегодня первашу",
-    "ищу девочку, темные волосы по плечи, была в рубашке в клетку оверсайз. сидели рядом в читальном зале",
-    "молодой человек в белых джорданах и кепке, стоял сегодня у банкомата. ты оч стильный",
-    "девушка в зеленом кардигане, ты сегодня выронила пропуск на турникетах, я тебе его подал.",
-    "парень с пирсингом брови из 8 группы, найдись",
-    "девчонка с длинными русыми волосами, была в джинсовке. шла сегодня от авеню в сторону 5 корпуса примерно в 15:30",
-    "парень в футболке slipknot найдись, я тоже их слушаю",
-    "ищу парня в черном худи с капюшоном, ты сидел на лавочке перед универом и пил энергетик",
-    "девочка в черной юбке в складку и белых гольфах. видела тебя на перемене, выглядишь супер",
-    "парень который сегодня на паре по вышмату решал судоку в телефоне.",
-    "девушка с рыжими кудряшками, мы вместе ехали в лифте на 6 этаж. у тебя классный парфюм",
-    "мальчики из 2 корпуса которые сегодня пели макса коржа на весь хор, подняли настроение",
-    "ищу парня с тату паутины на локте, видел тебя в курилке.",
-    "девчонка в леопардовых штанах, которая сегодня громко разговаривала по телефону возле деканата.",
-    "парень с хвостиком на голове, в черной водолазке. стоял у автомата с едой на 2 этаже. отзовись",
-    "девушка в очках авиаторах и кожаном плаще, выглядишь очень стильно",
-    "ищу парня из команды по волейболу, номер 7 вроде. круто играешь",
-    "девочка с розовым рюкзаком канкен, ты забыла тетрадь по инглишу в 412 аудитории, я отнесла на кафедру",
-    "парень в сером пальто и белом шарфе, ты сегодня смотрел на меня в метро а потом вышел на станции юго-западная и пошел к универу. найдись",
-    "девушка с челкой и в черном чокере, сидела в телефоне возле 3 аудитории.",
-    "парень который гоняет на электросамокате в желтой куртке, будь осторожнее, чуть не сбил сегодня",
-    "ищу девочку в синем худи с надписью GAP, ты сегодня покупала двойной капучино",
-    "парень с кудряшками из 1 курса журналистики. ты очень харизматичный",
-    "девчонка в белых кроссах на высокой платформе, выглядит очень необычно",
-    "молодой человек в очках, сидел на 1 парте на философии. ты очень интересно спорил с преподавателем",
-    "девушка с зеленым шоппером, на котором нарисован лягушонок.",
-    "ищу парня который сегодня в гардеробе отдал мне свою куртку без очереди. спасибо тебе",
-    "девчонки из танцевальной сборной, вы вчера на репетиции были супер. удачи на выступлении",
-    "парень в спортивках адидас и черной панаме, стоял на крыльце 4 корпуса.",
-    "девушка в розовом пуховике, мы с тобой столкнулись глазами на эскалаторе.",
-    "парень из 5 группы ит, который всегда ходит с термосом.",
-    "ищу девочку с короткими светлыми волосами, была в черной водолазке и серебряной цепочке.",
-    "мальчик в рубашке с драконами, ты сидел сегодня в коворкинге за ноутом.",
-    "девушка с пирсингом септума и в берцах, видела тебя в курилке 2 корпуса.",
-    "парень который сегодня читал стихи на литературе. очень красиво",
-    "ищу парня с синими прядями в волосах, был в джинсовой куртке с нашивками.",
-    "девочка в бежевом тренче и с шелковым платком на шее, очень красиво выглядишь",
-    "парень который сегодня переходил проспект вернадского в сторону академии около 9:40. был в черном пальто и с кожаным портфелем. отзовись",
-    "девушка с татуировкой бабочки на руке, стояла сегодня в очереди за пиццей в столовой.",
-    "парень в черной рубашке расстегнутой на пару пуговиц, ты проходил мимо 210 кабинета примерно в 14:20.",
-    "девчонка с дредокудрями, ты сегодня сидела на лавочке в сквере.",
-    "парень с сумкой мессенджером через плечо, постоянно вижу тебя в коридорах.",
-    "ищу девушку из 2 группы фмп, ты сегодня была в красивом красном платье на парах.",
-    "парень в футболке с риком и морти, мы переглянулись возле расписания.",
-    "девочка с пучком на голове и в очках для зрения, ты мило морщила нос когда читала конспект",
-    "парень из студсовета который сегодня бегал с документами по 1 этажу.",
-    "ищу девушку в серых спортивных штанах и белом топе, мы вместе бегали на физре в тропаревском парке сегодня. ты быстро бегаешь",
-    "мальчик с веснушками и русыми волосами, ты сегодня покупал воду в автомате",
-    "девчонка в черном корсете поверх белой рубашки, очень стильный образ",
-    "парень с бородой и в клетчатой рубашке, ты сидел в библиотеке за 3 столом.",
-    "девушка с розовым маникюром, мы вместе сидели на задней парте на экономике.",
-    "ищу парня который сегодня играл на пианино в актовом зале.",
-    "парень который стоял на остановке возле мирэа и ждал автобус. ты был в наушниках и бордовой толстовке. найдись",
-    "девочка с сережками в виде вишен, стояла сегодня возле деканата и грустила. не грусти",
-    "парень в кожаной куртке и с гитарным чехлом за спиной, ты заходил в 5 корпус в 9 утра.",
-    "девушка в синих джинсах клеш и белом кроп топе, видела тебя возле зеркала на 2 этаже.",
-    "ищу парня из 7 группы, ты всегда ходишь в наушниках.",
-    "девчонка с гетерохромией (разные глаза), видела тебя на лекции потока. очень необычно",
-    "парень который сегодня на матане задал смешной вопрос преподу.",
-    "девушка в пушистом белом свитере, видела тебя на фудкорте в авеню после пар. ты сидела с подругой",
-    "парень с кольцом на большом пальце и татуировкой на шее, стоял курил возле главного входа в 15:40. отзовись",
-    "ищу девочку в черной юбке карандаш и красных туфлях, ты сегодня защищала проект на семинаре. выступила отлично",
-    "мальчик в белом худи трешер, ты сегодня смеялся над чем-то в телефоне на паре.",
-    "девчонка с зелеными стрелками, ты сидела сегодня на подоконнике 3 этажа. красивый макияж",
-    "парень который сегодня помогал носить стулья в актовом зале.",
-    "ищу девушку с черным рюкзаком со значками, мы ехали вместе в автобусе до универа.",
-    "парень в синем спортивном костюме, ты сегодня подтянулся на турнике на физре 20 раз.",
-    "девочка которая сегодня плакала на лестнице запасного выхода, надеюсь у тебя все наладилось"
+    "парень из 3 группы фнн, который сегодня отвечал у доски, у тебя очень красивый голос"
 ]
 
 @dp.callback_query(F.data == "admin_fake", F.from_user.id == ADMIN_ID)
@@ -557,11 +517,9 @@ async def cb_admin_fake(callback: types.CallbackQuery):
     if not FAKE_POSTS:
         await callback.answer("❌ База фейков полностью исчерпана!", show_alert=True)
         return
-        
     fake_text = random.choice(FAKE_POSTS)
     FAKE_POSTS.remove(fake_text)
     signature = "\n\n<a href='https://t.me/LoveUgoZapad'>Признания Юго-Западная</a>"
-    
     try:
         msg = await bot.send_message(chat_id=CHANNEL_ID, text=fake_text + signature, parse_mode="HTML")
         await callback.answer(f"✅ Опубликовано! Осталось: {len(FAKE_POSTS)}", show_alert=True)
@@ -570,6 +528,10 @@ async def cb_admin_fake(callback: types.CallbackQuery):
         await callback.answer(f"Ошибка: {e}", show_alert=True)
 
 async def main():
+    # Регистрируем наш фильтр подписки (Middleware)
+    dp.message.middleware(CheckSubscriptionMiddleware())
+    dp.callback_query.middleware(CheckSubscriptionMiddleware())
+    
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
